@@ -1,0 +1,27 @@
+name: report
+description: Report downstream CI status back to an upstream GitHub check run.
+author: multi-github-validation-workflows
+
+inputs:
+  state:
+    description: One of started, in_progress, success, failure, cancelled, skipped.
+    required: true
+  progress:
+    description: Optional integer 0-100; only honored when state is in_progress.
+    required: false
+  summary:
+    description: Optional short text written to the check-run output summary.
+    required: false
+  details_url:
+    description: Override for the check run's details URL. Defaults to the current downstream workflow run on 'started'.
+    required: false
+  app_id:
+    description: GitHub App ID registered on the upstream GitHub instance.
+    required: true
+  private_key:
+    description: PEM-encoded private key for the upstream GitHub App.
+    required: true
+
+runs:
+  using: node20
+  main: dist/index.js

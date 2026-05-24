@@ -1,0 +1,66 @@
+name: cross-github-validation push helper
+description: Internal helper used by push.yaml to create the upstream check, amend the commit, and push to a single downstream GitHub + repo.
+author: multi-github-validation-workflows
+
+inputs:
+  ref:
+    description: Git ref or SHA to validate. Already checked out into the workspace.
+    required: true
+  target_server_url:
+    description: Server URL of the target GitHub (e.g. https://github.com or https://ghes.example).
+    required: true
+  repository:
+    description: Target repository in 'owner/repo' form on the target GitHub.
+    required: true
+  base_branch:
+    description: Base branch when mode=pr. Default 'main'.
+    required: false
+    default: main
+  mode:
+    description: 'direct' (push branch only) or 'pr' (push branch + open/refresh PR). Default 'pr'.
+    required: false
+    default: pr
+  pr_labels:
+    description: Space-delimited PR labels (only used when mode=pr).
+    required: false
+    default: ""
+  check_name:
+    description: Name of the upstream check run to create.
+    required: true
+  branch_prefix:
+    description: Prefix for the downstream branch name. Default 'cross-validation'.
+    required: false
+    default: cross-validation
+  sign_commit:
+    description: When 'true', construct the amended commit via the GitHub Git Data API so it is signed by the target GitHub App. When 'false' (default), amend locally with git and force-push.
+    required: false
+    default: "false"
+  workspace:
+    description: Repo working directory. Defaults to GITHUB_WORKSPACE.
+    required: false
+  upstream_app_id:
+    description: GitHub App ID registered on the upstream GitHub instance (this side).
+    required: true
+  upstream_private_key:
+    description: PEM-encoded private key for the upstream GitHub App.
+    required: true
+  target_app_id:
+    description: GitHub App ID registered on the target GitHub instance.
+    required: true
+  target_private_key:
+    description: PEM-encoded private key for the target GitHub App.
+    required: true
+
+outputs:
+  skipped:
+    description: 'true' when the action skipped because the target equals the current server+repo.
+  check_run_id:
+    description: ID of the created upstream check run (empty when skipped).
+  target_branch:
+    description: Branch name pushed to the target repo (empty when skipped).
+  target_url:
+    description: PR or commit URL on the target GitHub (empty when skipped).
+
+runs:
+  using: node20
+  main: dist/index.js
