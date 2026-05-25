@@ -14,6 +14,7 @@ permissions: {}
 jobs:
   version:
     runs-on: ubuntu-latest
+    if: github.repository == 'watermarkhu/multi-github-validation-actions'
     permissions:
       contents: write
       pull-requests: write # Required for adding the labels to the PR
@@ -66,7 +67,6 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: bundle dist for ${TAG}"
             git tag -f "${TAG}"
-            git push --force origin "refs/tags/${TAG}"
           fi
 
       - name: Smoke push test

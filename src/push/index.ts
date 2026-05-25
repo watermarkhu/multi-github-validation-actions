@@ -56,6 +56,7 @@ async function run(): Promise<void> {
   const upstreamServer = process.env.GITHUB_SERVER_URL ?? "https://github.com";
   const upstreamOwner = ctx.repo.owner;
   const upstreamRepo = ctx.repo.repo;
+  const triggerSha = ctx.sha;
 
   if (
     isSameTarget(
@@ -104,7 +105,7 @@ async function run(): Promise<void> {
     upstream,
     upstreamOwner,
     upstreamRepo,
-    sha,
+    triggerSha,
     checkName,
     target
   );
