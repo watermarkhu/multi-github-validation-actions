@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: needs.version.outputs.release == 'true'
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
@@ -54,8 +53,8 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
       - run: pnpm run build
 
       - name: Force-add built dist to the release tag
@@ -70,7 +69,19 @@ jobs:
             git push --force origin "refs/tags/${TAG}"
           fi
 
+      - name: Smoke push test
+        uses: ./push
+        with:
+          ref: ${{ env.TAG }}
+          target_server_url: https://github.com
+          repository: watermarkhu/multi-github-validation-workflows-fixture
+          upstream_app_id: ${{ vars.WATERMARKHU_APP_ID }}
+          upstream_private_key: ${{ secrets.WATERMARKHU_APP_PRIVATE_KEY }}
+          target_app_id: ${{ vars.WATERMARKHU_APP_ID }}
+          target_private_key: ${{ secrets.WATERMARKHU_APP_PRIVATE_KEY }}
+
       - name: Create GitHub release
+        if: needs.version.outputs.release == 'true'
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           body: ${{ needs.version.outputs.release-notes }}
