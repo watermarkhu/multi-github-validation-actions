@@ -1,41 +1,33 @@
 # multi-github-validation-workflows
 
-Reusable workflow + actions for cross-validating CI across multiple GitHub
-instances. The same change opened on an "upstream" GitHub is mirrored to a
-"target" GitHub + repo, where the same CI runs and reports its progress back
-to the upstream PR as a single, consolidated check.
+Cross-validate the same change across multiple GitHub instances. Open a PR
+on your "upstream" GitHub, and the same commit is mirrored to one or more
+"target" GitHub instances + repos where CI runs and reports back to the
+upstream PR as a single, consolidated check.
 
-## Pieces
+## Validation flow
 
-- **`.github/workflows/push.yaml`** — reusable workflow (`workflow_call`).
-  Pushes a single ref to a single target. Callers fan out to multiple
-  targets via their own matrix.
-- **`./` (root) — `report` action.** TypeScript JS action. Called from
-  target CI. Reads the marker, mints an installation token for the
-  upstream GitHub App, and updates the upstream check run.
-- **`./.github/actions/push/` — internal helper action.** Used by `push.yaml`.
+```mermaid
+sequenceDiagram
+    participant Up as Upstream
+    participant Tgt as Target
 
-## GitHub App setup
+    Up->>Up: Create check run
+    Up->>Tgt: Push commit (with marker)
+    Tgt->>Tgt: Run CI
+    Tgt->>Up: Update check run
+```
 
-You need **two** GitHub Apps, one registered on each instance:
+The marker embedded in the commit body lets the target CI find its way back
+to the upstream check run. Target-native commits never carry a marker, so
+the `report` action no-ops when run on unrelated commits.
 
-| App | Lives on | Stored as a secret on | Permissions |
-|-----|----------|-----------------------|-------------|
-| Upstream app | Upstream GitHub (A) | Target repo (B) — used by `report` | `checks: write` |
-| Target app | Target GitHub (B) | Upstream repo (A) — used by `push.yaml` | `contents: write`, `pull_requests: write` |
+## Quickstart
 
-For each app, install it on the relevant repo and store its `app_id` and PEM
-private key as repository or organization secrets.
+Two pieces wire together: a reusable workflow on the upstream side, and the
+`report` action on the target side.
 
-When `sign_commit: true`, the target app must also have permission to write
-to the repository's git data — `contents: write` is sufficient. Commits
-created via the Git Data API are automatically signed by the GitHub App's
-identity, satisfying branch-protection rules that require signed commits.
-
-## Caller workflow (upstream side)
-
-The reusable workflow handles a single target. To validate against multiple
-targets, fan out from your caller workflow:
+**Upstream** — call `push.yaml` from a workflow on your PR trigger:
 
 ```yaml
 # .github/workflows/cross-validate.yaml in your upstream repo
@@ -56,9 +48,7 @@ jobs:
       ref: ${{ github.event.pull_request.head.sha }}
       target_server_url: ${{ matrix.target.server_url }}
       repository: ${{ matrix.target.repository }}
-      base_branch: main
       mode: pr
-      pr_labels: "cross-validation automated"
       sign_commit: true
     secrets:
       upstream_app_id: ${{ secrets.UPSTREAM_APP_ID }}
@@ -67,13 +57,7 @@ jobs:
       target_private_key: ${{ secrets.TARGET_APP_PRIVATE_KEY }}
 ```
 
-The same workflow also works for *same-instance* validation (e.g. push from
-`org/repo` to `org/repo-validation` on the same GitHub) — just point
-`target_server_url` and `repository` at the other repo. If they happen to
-match the current repo, the action skips automatically (see
-[Anti-circular protection](#anti-circular-protection)).
-
-## Target CI workflow
+**Target** — call the `report` action from your CI:
 
 ```yaml
 # .github/workflows/qualify.yaml in your target repo
@@ -94,7 +78,6 @@ jobs:
           private_key: ${{ secrets.UPSTREAM_APP_PRIVATE_KEY }}
 
       - run: ./scripts/run-tests.sh
-        id: tests
 
       - if: success()
         uses: your-org/multi-github-validation-workflows@v1
@@ -123,56 +106,86 @@ You can also report intermediate progress:
     private_key: ${{ secrets.UPSTREAM_APP_PRIVATE_KEY }}
 ```
 
-## Anti-circular protection
+The same setup works for *same-instance* validation (push from `org/repo`
+to `org/repo-validation` on the same GitHub) — point `target_server_url`
+and `repository` at the other repo. If they happen to match the current
+repo, the workflow skips automatically.
 
-Because the repository is cloned to every participating GitHub instance, it
-guards against infinite reflection in two ways:
+## GitHub App setup
 
-1. **`push.yaml`** — skips with a notice (and sets the `skipped` output to
-   `"true"`) when `target_server_url + repository` matches the current
-   `github.server_url + github.repository`. This makes it safe to use the
-   same caller workflow on every instance.
-2. **`report` action** — exits 0 with a notice if the triggering commit's
-   message has no `<!-- upstream-check ... -->` marker. Native target
-   commits never carry the marker, so they never trigger an upstream callback.
+You need **two** GitHub Apps, one registered on each instance. Each side
+stores the *other* side's credentials:
 
-## Report states
+| App | Registered on | Installed on | Credentials stored on | Used by | Permissions |
+|-----|---------------|--------------|------------------------|---------|-------------|
+| Upstream app | Upstream GitHub (A) | Upstream repo | Target repo (B) | `report` action | `checks: write` |
+| Target app | Target GitHub (B) | Target repo | Upstream repo (A) | `push.yaml` | `contents: write`, `pull_requests: write` |
 
-| state | GitHub status | conclusion | notes |
-|-------|---------------|------------|-------|
-| `started` | `in_progress` | — | Sets `details_url` to the target run by default. |
-| `in_progress` | `in_progress` | — | Optional `progress` (0-100) renders a progress bar in the summary. |
-| `success` | `completed` | `success` | |
-| `failure` | `completed` | `failure` | |
-| `cancelled` | `completed` | `cancelled` | |
-| `skipped` | `completed` | `skipped` | |
+Store each app's `app_id` and PEM private key as repository or organization
+secrets on the side that uses them.
+
+When `sign_commit: true`, the target app needs `contents: write` (already
+required for the push). Commits created via the Git Data API are
+automatically signed by the GitHub App's identity, satisfying branch
+protection rules that require signed commits.
+
+## `push.yaml` inputs
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ref` | string | *required* | Git ref or SHA to push to the target. |
+| `target_server_url` | string | *required* | Server URL of the target GitHub (e.g. `https://github.com` or `https://ghes.example`). |
+| `repository` | string | *required* | Target repository in `owner/repo` form. |
+| `base_branch` | string | `main` | Base branch when `mode: pr`. |
+| `mode` | string | `direct` | `direct` (push to a branch) or `pr` (push and open a PR). |
+| `pr_labels` | string | `""` | Space-delimited PR labels. Only applied when `mode: pr`. |
+| `check_name` | string | `cross-github-validation` | Name of the upstream check run. |
+| `branch_prefix` | string | `cross-validation` | Prefix for the target branch name. The branch is `<prefix>/<short-sha>`. |
+| `sign_commit` | boolean | `false` | When `true`, build the amended commit via the Git Data API so it's signed by the target App. |
+
+**Secrets:** `upstream_app_id`, `upstream_private_key`, `target_app_id`,
+`target_private_key` — all required.
+
+**Picking a mode:** use `direct` when the target repo's CI runs on push;
+use `pr` when CI is gated on pull request, or when you want a visible PR
+on the target side for review.
+
+## `report` action inputs
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `state` | string | *required* | One of `started`, `in_progress`, `success`, `failure`, `cancelled`, `skipped`. |
+| `progress` | integer | — | 0-100. Only honored when `state: in_progress`; renders a progress bar in the check summary. |
+| `summary` | string | — | Short text written to the check run output. |
+| `details_url` | string | current run URL on `started` | Override for the check run's `details_url`. |
+| `app_id` | string | *required* | Upstream GitHub App ID. |
+| `private_key` | string | *required* | PEM-encoded private key for the upstream app. |
+
+### Report states
+
+| state | GitHub status | conclusion |
+|-------|---------------|------------|
+| `started` | `in_progress` | — |
+| `in_progress` | `in_progress` | — |
+| `success` | `completed` | `success` |
+| `failure` | `completed` | `failure` |
+| `cancelled` | `completed` | `cancelled` |
+| `skipped` | `completed` | `skipped` |
 
 ## Signed commits
 
-Set `sign_commit: true` to construct the amended commit via the GitHub Git
-Data API on the target. The flow is:
+Set `sign_commit: true` if the target enforces signed commits via branch
+protection. The resulting commit is signed by the target GitHub App's GPG
+key. This costs an extra round-trip per push.
 
-1. Push the original (unmodified) commit to a scratch branch on the target.
-2. Call `POST /repos/{owner}/{repo}/git/commits` with the same tree + parents
-   but the new commit message — GitHub signs the resulting commit with the
-   target App's GPG key.
-3. Move the real branch ref to the signed commit.
-4. Delete the scratch ref.
+## Loop prevention
 
-This is required when target branch protection mandates signed commits. It
-costs an extra round-trip per push but produces a verified commit owned by
-the target App.
+Because this repo is cloned to every participating GitHub instance, two
+guards keep it from looping:
 
-## Development
-
-```sh
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build      # writes dist/ for both actions
-```
-
-Both actions are bundled with esbuild (CJS, node20 target) to a single
-`dist/index.js` per action. `dist/` is gitignored — the release workflow
-builds and force-pushes the bundle onto the release tag, which is what
-consumers reference (`@v1`, `@v2`, etc.).
+1. `push.yaml` skips when `target_server_url + repository` matches the
+   current `github.server_url + github.repository`. This makes the same
+   caller workflow safe to install on every instance.
+2. The `report` action exits 0 with a notice when the triggering commit
+   has no `<!-- upstream-check ... -->` marker. Target-native commits
+   never carry the marker.
