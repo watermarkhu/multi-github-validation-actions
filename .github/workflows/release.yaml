@@ -1,17 +1,47 @@
 name: release
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    branches: [main]
+    types: 
+      - opened
+      - reopened
+      - synchronize
+      - edited
 
 permissions: {}
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write # Required for adding the labels to the PR
+      issues: write # Required for adding labels to the repository
+    outputs:
+      release: ${{ steps.semversie.outputs.release }}
+      prerelease: ${{ steps.semversie.outputs.prerelease }}
+      release-notes: ${{ steps.semversie.outputs.release-notes }}
+      tag: ${{ steps.semversie.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Calculate version
+        id: semversie
+        uses: RonaldPhilipsen/semVersie@5e6e0f14dc4541ab5e740211db817961d9741b8d # v2.3.2
+        with:
+          add-pr-label: true
+
+  release:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: needs.version.outputs.release == 'true'
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -35,12 +65,15 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add -f dist .github/actions/push/dist
           if ! git diff --cached --quiet; then
-            git commit -m "chore: bundle dist for ${GITHUB_REF_NAME}"
-            git tag -f "${GITHUB_REF_NAME}"
-            git push --force origin "refs/tags/${GITHUB_REF_NAME}"
+            git commit -m "chore: bundle dist for ${TAG}"
+            git tag -f "${TAG}"
+            git push --force origin "refs/tags/${TAG}"
           fi
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
-          generate_release_notes: true
+          body: ${{ needs.version.outputs.release-notes }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          prerelease: ${{ needs.version.outputs.prerelease }}
+
