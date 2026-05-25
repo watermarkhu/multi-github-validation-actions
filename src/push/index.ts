@@ -56,7 +56,7 @@ async function run(): Promise<void> {
   const upstreamServer = process.env.GITHUB_SERVER_URL ?? "https://github.com";
   const upstreamOwner = ctx.repo.owner;
   const upstreamRepo = ctx.repo.repo;
-  const triggerSha = ctx.sha;
+  const triggerSha = resolveTriggerSha(ctx);
 
   if (
     isSameTarget(
@@ -324,6 +324,18 @@ async function getInstallationToken(octokit: Octokit): Promise<string> {
   const auth = (await octokit.auth({ type: "installation" })) as { token: string };
   if (!auth?.token) throw new Error("failed to obtain installation token from Octokit auth.");
   return auth.token;
+}
+
+function resolveTriggerSha(ctx: typeof github.context): string {
+  const payload = ctx.payload as {
+    pull_request?: { head?: { sha?: string } };
+    workflow_run?: { head_sha?: string };
+  };
+  return (
+    payload.pull_request?.head?.sha ??
+    payload.workflow_run?.head_sha ??
+    ctx.sha
+  );
 }
 
 run().catch((err) => {
