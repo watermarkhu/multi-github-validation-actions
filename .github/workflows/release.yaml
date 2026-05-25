@@ -34,6 +34,7 @@ jobs:
         uses: RonaldPhilipsen/semVersie@5e6e0f14dc4541ab5e740211db817961d9741b8d # v2.3.2
         with:
           add-pr-label: true
+          label-prefix: false
 
   release:
     needs: version
@@ -74,7 +75,7 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           target_server_url: https://github.com
-          repository: watermarkhu/multi-github-validation-workflows-fixture
+          repository: watermarkhu/multi-github-validation-actions-fixture
           upstream_app_id: ${{ vars.WATERMARKHU_APP_ID }}
           upstream_private_key: ${{ secrets.WATERMARKHU_APP_PRIVATE_KEY }}
           target_app_id: ${{ vars.WATERMARKHU_APP_ID }}

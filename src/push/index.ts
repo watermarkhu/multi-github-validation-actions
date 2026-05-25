@@ -76,6 +76,10 @@ async function run(): Promise<void> {
     return;
   }
 
+  core.info(`upstream: ${upstreamServer}/${upstreamOwner}/${upstreamRepo} (trigger ${triggerSha})`);
+  core.info(`target:   ${target.serverUrl}/${target.owner}/${target.repo}`);
+
+  core.info("authenticating upstream app...");
   const upstream = await createAppOctokit({
     appId: upstreamAppId,
     privateKey: upstreamPrivateKey,
@@ -83,6 +87,7 @@ async function run(): Promise<void> {
     owner: upstreamOwner,
     repo: upstreamRepo,
   });
+  core.info("authenticating target app...");
   const targetOctokit = await createAppOctokit({
     appId: targetAppId,
     privateKey: targetPrivateKey,
