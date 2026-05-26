@@ -38,6 +38,16 @@ export class Git {
     await this.run(["remote", "add", name, url]);
   }
 
+  async fetchRef(remote: string, ref: string, serverUrl?: string): Promise<void> {
+    const args: string[] = [];
+    if (serverUrl) {
+      const prefix = serverUrl.replace(/\/+$/, "") + "/";
+      args.push("-c", `http.${prefix}.extraheader=`);
+    }
+    args.push("fetch", remote, ref);
+    await this.run(args).catch(() => undefined);
+  }
+
   async pushForce(remote: string, refspec: string, serverUrl?: string): Promise<void> {
     const args: string[] = [];
     if (serverUrl) {

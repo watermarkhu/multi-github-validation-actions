@@ -61,6 +61,7 @@ async function run(): Promise<void> {
   const upstreamRepo = ctx.repo.repo;
   const triggerInfo = resolveTrigger(ctx);
   const triggerSha = triggerInfo.sha;
+  const upstreamRunUrl = `${upstreamServer}/${upstreamOwner}/${upstreamRepo}/actions/runs/${ctx.runId}`;
 
   if (
     isSameTarget(
@@ -178,6 +179,7 @@ async function run(): Promise<void> {
     } else {
       await git.amendCommitMessage(amendedMessage);
       pushedSha = await git.showCommitSha("HEAD");
+      await git.fetchRef("target", branch, target.serverUrl);
       await git.pushForce("target", `HEAD:refs/heads/${branch}`, target.serverUrl);
     }
 
@@ -196,7 +198,8 @@ async function run(): Promise<void> {
         branch,
         prLabels,
         sha,
-        draft
+        draft,
+        upstreamRunUrl
       );
       detailsUrl = pr.html_url;
     }
@@ -343,6 +346,7 @@ async function pushSignedAmend(input: {
   branch: string;
 }): Promise<string> {
   const scratchBranch = `${input.branch}.scratch`;
+  await input.git.fetchRef("target", scratchBranch, input.target.serverUrl);
   await input.git.pushForce(
     "target",
     `${input.baseSha}:refs/heads/${scratchBranch}`,
@@ -386,10 +390,15 @@ async function upsertPullRequest(
   branch: string,
   labels: string[],
   upstreamSha: string,
-  draft: boolean
+  draft: boolean,
+  upstreamRunUrl: string
 ): Promise<{ html_url: string; number: number }> {
   const title = `cross-validation: ${upstreamSha.slice(0, 12)}`;
-  const body = `Automated cross-GitHub validation push.\n\nUpstream commit: ${upstreamSha}\nTarget branch: ${branch}\n`;
+  const body =
+    `Automated cross-GitHub validation push.\n\n` +
+    `Upstream commit: ${upstreamSha}\n` +
+    `Upstream run: ${upstreamRunUrl}\n` +
+    `Target branch: ${branch}\n`;
 
   const existing = await octokit.pulls.list({
     owner: target.owner,
@@ -401,10 +410,14 @@ async function upsertPullRequest(
 
   let pr: { html_url: string; number: number };
   if (existing.data.length > 0) {
-    pr = {
-      html_url: existing.data[0]!.html_url,
-      number: existing.data[0]!.number,
-    };
+    const found = existing.data[0]!;
+    await octokit.pulls.update({
+      owner: target.owner,
+      repo: target.repo,
+      pull_number: found.number,
+      body,
+    });
+    pr = { html_url: found.html_url, number: found.number };
   } else {
     const closed = await octokit.pulls.list({
       owner: target.owner,
@@ -421,6 +434,7 @@ async function upsertPullRequest(
         repo: target.repo,
         pull_number: closed.data[0]!.number,
         state: "open",
+        body,
       });
       core.info(`reopened downstream PR #${reopened.data.number} (${reopened.data.html_url})`);
       pr = { html_url: reopened.data.html_url, number: reopened.data.number };
