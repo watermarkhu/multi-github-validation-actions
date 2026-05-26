@@ -139,8 +139,9 @@ protection rules that require signed commits.
 | `base_branch` | string | `main` | Base branch when `mode: pr`. |
 | `mode` | string | `direct` | `direct` (push to a branch) or `pr` (push and open a PR). |
 | `pr_labels` | string | `""` | Space-delimited PR labels. Only applied when `mode: pr`. |
+| `draft` | boolean | `false` | When `true` and `mode: pr`, open the downstream PR as a draft. |
 | `check_name` | string | `cross-github-validation` | Name of the upstream check run. |
-| `branch_prefix` | string | `cross-validation` | Prefix for the target branch name. The branch is `<prefix>/<short-sha>`. |
+| `branch_prefix` | string | `cross-validation` | Prefix for the target branch name. PR triggers use `<prefix>/pr-<number>`; other triggers use `<prefix>/<short-sha>`. |
 | `sign_commit` | boolean | `false` | When `true`, build the amended commit via the Git Data API so it's signed by the target App. |
 
 **Secrets:** `upstream_app_id`, `upstream_private_key`, `target_app_id`,
@@ -149,6 +150,17 @@ protection rules that require signed commits.
 **Picking a mode:** use `direct` when the target repo's CI runs on push;
 use `pr` when CI is gated on pull request, or when you want a visible PR
 on the target side for review.
+
+**PR lifecycle (`mode: pr`):** when the upstream trigger is a `pull_request`
+event, the action keys the downstream branch by PR number
+(`<prefix>/pr-<number>`), so subsequent pushes to the same upstream PR
+force-update the same downstream branch and reuse the same downstream PR.
+On `pull_request: closed`, the action closes the downstream PR, deletes
+the target branch, and posts a `skipped` check run on the upstream
+commit. On `pull_request: reopened`, the action recreates the branch and
+reopens the previously-closed downstream PR (rather than opening a new
+one). To wire up close/reopen handling, include `closed` and `reopened`
+in the workflow's `pull_request.types` filter.
 
 ## `report` action inputs
 

@@ -19,6 +19,13 @@ export function buildBranchName(prefix: string, sha: string): string {
   return `${prefix}/${sha.slice(0, 12)}`;
 }
 
+export function buildPrBranchName(prefix: string, prNumber: number): string {
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    throw new Error(`expected positive integer PR number, got: ${prNumber}`);
+  }
+  return `${prefix}/pr-${prNumber}`;
+}
+
 export function buildCommitUrl(
   serverUrl: string,
   owner: string,
