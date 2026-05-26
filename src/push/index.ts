@@ -7,6 +7,7 @@ import { Git } from "./git.js";
 import {
   buildBranchName,
   buildCommitUrl,
+  buildPrBranchName,
   buildRemoteUrl,
   isSameTarget,
   parsePrLabels,
@@ -16,6 +17,7 @@ import {
   createSignedAmendedCommit,
   upsertBranchRef,
 } from "./signed-commit.js";
+import { resolveTrigger } from "./trigger.js";
 
 interface TargetConfig {
   serverUrl: string;
@@ -31,6 +33,7 @@ async function run(): Promise<void> {
   const baseBranch = core.getInput("base_branch") || "main";
   const mode = (core.getInput("mode") || "pr") as "direct" | "pr";
   const prLabels = parsePrLabels(core.getInput("pr_labels"));
+  const draft = core.getBooleanInput("draft") || false;
   const checkName = core.getInput("check_name", { required: true });
   const branchPrefix = core.getInput("branch_prefix") || "cross-validation";
   const signCommit = core.getBooleanInput("sign_commit") || false;
@@ -56,6 +59,9 @@ async function run(): Promise<void> {
   const upstreamServer = process.env.GITHUB_SERVER_URL ?? "https://github.com";
   const upstreamOwner = ctx.repo.owner;
   const upstreamRepo = ctx.repo.repo;
+  const triggerInfo = resolveTrigger(ctx);
+  const triggerSha = triggerInfo.sha;
+  const upstreamRunUrl = `${upstreamServer}/${upstreamOwner}/${upstreamRepo}/actions/runs/${ctx.runId}`;
 
   if (
     isSameTarget(
@@ -75,6 +81,10 @@ async function run(): Promise<void> {
     return;
   }
 
+  core.info(`upstream: ${upstreamServer}/${upstreamOwner}/${upstreamRepo} (trigger ${triggerSha})`);
+  core.info(`target:   ${target.serverUrl}/${target.owner}/${target.repo}`);
+
+  core.info("authenticating upstream app...");
   const upstream = await createAppOctokit({
     appId: upstreamAppId,
     privateKey: upstreamPrivateKey,
@@ -82,6 +92,7 @@ async function run(): Promise<void> {
     owner: upstreamOwner,
     repo: upstreamRepo,
   });
+  core.info("authenticating target app...");
   const targetOctokit = await createAppOctokit({
     appId: targetAppId,
     privateKey: targetPrivateKey,
@@ -89,6 +100,26 @@ async function run(): Promise<void> {
     owner: target.owner,
     repo: target.repo,
   });
+
+  const isPrClose =
+    mode === "pr" &&
+    triggerInfo.action === "closed" &&
+    triggerInfo.prNumber !== undefined;
+
+  if (isPrClose) {
+    const branch = buildPrBranchName(branchPrefix, triggerInfo.prNumber!);
+    await handlePrClosed({
+      upstream,
+      targetOctokit,
+      upstreamOwner,
+      upstreamRepo,
+      triggerSha,
+      checkName,
+      target,
+      branch,
+    });
+    return;
+  }
 
   const git = new Git({ cwd: workspace });
   await git.configIdentity(
@@ -104,7 +135,7 @@ async function run(): Promise<void> {
     upstream,
     upstreamOwner,
     upstreamRepo,
-    sha,
+    triggerSha,
     checkName,
     target
   );
@@ -121,7 +152,10 @@ async function run(): Promise<void> {
 
     const originalMessage = await git.showCommitMessage(sha);
     const amendedMessage = appendMarker(originalMessage, marker);
-    const branch = buildBranchName(branchPrefix, sha);
+    const branch =
+      mode === "pr" && triggerInfo.prNumber !== undefined
+        ? buildPrBranchName(branchPrefix, triggerInfo.prNumber)
+        : buildBranchName(branchPrefix, sha);
 
     const targetToken = await getInstallationToken(targetOctokit);
     const remoteUrl = buildRemoteUrl(
@@ -145,7 +179,8 @@ async function run(): Promise<void> {
     } else {
       await git.amendCommitMessage(amendedMessage);
       pushedSha = await git.showCommitSha("HEAD");
-      await git.pushForce("target", `HEAD:refs/heads/${branch}`);
+      await git.fetchRef("target", branch, target.serverUrl);
+      await git.pushForce("target", `HEAD:refs/heads/${branch}`, target.serverUrl);
     }
 
     let detailsUrl: string;
@@ -162,7 +197,9 @@ async function run(): Promise<void> {
         target,
         branch,
         prLabels,
-        sha
+        sha,
+        draft,
+        upstreamRunUrl
       );
       detailsUrl = pr.html_url;
     }
@@ -225,6 +262,81 @@ async function createUpstreamCheck(
   return { id: data.id, html_url: data.html_url };
 }
 
+async function handlePrClosed(input: {
+  upstream: Octokit;
+  targetOctokit: Octokit;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  triggerSha: string;
+  checkName: string;
+  target: TargetConfig;
+  branch: string;
+}): Promise<void> {
+  const { upstream, targetOctokit, upstreamOwner, upstreamRepo, triggerSha, checkName, target, branch } = input;
+
+  core.info(`upstream PR closed - looking for downstream PR on ${target.owner}:${branch}`);
+  const existing = await targetOctokit.pulls.list({
+    owner: target.owner,
+    repo: target.repo,
+    head: `${target.owner}:${branch}`,
+    state: "open",
+    per_page: 1,
+  });
+
+  if (existing.data.length === 0) {
+    core.notice(
+      `no open downstream PR found for ${target.owner}:${branch} - nothing to close.`
+    );
+    core.setOutput("skipped", "true");
+    core.setOutput("check_run_id", "");
+    core.setOutput("target_branch", branch);
+    core.setOutput("target_url", "");
+    return;
+  }
+
+  const downstreamPr = existing.data[0]!;
+  await targetOctokit.pulls.update({
+    owner: target.owner,
+    repo: target.repo,
+    pull_number: downstreamPr.number,
+    state: "closed",
+  });
+  core.info(`closed downstream PR #${downstreamPr.number} (${downstreamPr.html_url})`);
+
+  try {
+    await targetOctokit.git.deleteRef({
+      owner: target.owner,
+      repo: target.repo,
+      ref: `heads/${branch}`,
+    });
+    core.info(`deleted target branch ${branch}`);
+  } catch (err) {
+    core.warning(
+      `failed to delete target branch ${branch}: ${(err as Error).message}`
+    );
+  }
+
+  const { data: created } = await upstream.checks.create({
+    owner: upstreamOwner,
+    repo: upstreamRepo,
+    name: checkName,
+    head_sha: triggerSha,
+    status: "completed",
+    conclusion: "skipped",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Upstream PR closed",
+      summary: `Upstream PR was closed. Downstream PR ${downstreamPr.html_url} closed and branch \`${branch}\` deleted.`,
+    },
+  });
+  core.info(`created skipped upstream check ${created.id} on ${triggerSha}`);
+
+  core.setOutput("skipped", "false");
+  core.setOutput("check_run_id", String(created.id));
+  core.setOutput("target_branch", branch);
+  core.setOutput("target_url", "");
+}
+
 async function pushSignedAmend(input: {
   git: Git;
   octokit: Octokit;
@@ -234,7 +346,12 @@ async function pushSignedAmend(input: {
   branch: string;
 }): Promise<string> {
   const scratchBranch = `${input.branch}.scratch`;
-  await input.git.pushForce("target", `${input.baseSha}:refs/heads/${scratchBranch}`);
+  await input.git.fetchRef("target", scratchBranch, input.target.serverUrl);
+  await input.git.pushForce(
+    "target",
+    `${input.baseSha}:refs/heads/${scratchBranch}`,
+    input.target.serverUrl
+  );
 
   try {
     const newSha = await createSignedAmendedCommit({
@@ -272,10 +389,16 @@ async function upsertPullRequest(
   target: TargetConfig,
   branch: string,
   labels: string[],
-  upstreamSha: string
+  upstreamSha: string,
+  draft: boolean,
+  upstreamRunUrl: string
 ): Promise<{ html_url: string; number: number }> {
   const title = `cross-validation: ${upstreamSha.slice(0, 12)}`;
-  const body = `Automated cross-GitHub validation push.\n\nUpstream commit: ${upstreamSha}\nTarget branch: ${branch}\n`;
+  const body =
+    `Automated cross-GitHub validation push.\n\n` +
+    `Upstream commit: ${upstreamSha}\n` +
+    `Upstream run: ${upstreamRunUrl}\n` +
+    `Target branch: ${branch}\n`;
 
   const existing = await octokit.pulls.list({
     owner: target.owner,
@@ -287,20 +410,46 @@ async function upsertPullRequest(
 
   let pr: { html_url: string; number: number };
   if (existing.data.length > 0) {
-    pr = {
-      html_url: existing.data[0]!.html_url,
-      number: existing.data[0]!.number,
-    };
-  } else {
-    const created = await octokit.pulls.create({
+    const found = existing.data[0]!;
+    await octokit.pulls.update({
       owner: target.owner,
       repo: target.repo,
-      title,
+      pull_number: found.number,
       body,
-      head: branch,
-      base: target.baseBranch,
     });
-    pr = { html_url: created.data.html_url, number: created.data.number };
+    pr = { html_url: found.html_url, number: found.number };
+  } else {
+    const closed = await octokit.pulls.list({
+      owner: target.owner,
+      repo: target.repo,
+      head: `${target.owner}:${branch}`,
+      state: "closed",
+      sort: "created",
+      direction: "desc",
+      per_page: 1,
+    });
+    if (closed.data.length > 0) {
+      const reopened = await octokit.pulls.update({
+        owner: target.owner,
+        repo: target.repo,
+        pull_number: closed.data[0]!.number,
+        state: "open",
+        body,
+      });
+      core.info(`reopened downstream PR #${reopened.data.number} (${reopened.data.html_url})`);
+      pr = { html_url: reopened.data.html_url, number: reopened.data.number };
+    } else {
+      const created = await octokit.pulls.create({
+        owner: target.owner,
+        repo: target.repo,
+        title,
+        body,
+        head: branch,
+        base: target.baseBranch,
+        draft,
+      });
+      pr = { html_url: created.data.html_url, number: created.data.number };
+    }
   }
 
   if (labels.length > 0) {

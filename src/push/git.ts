@@ -38,8 +38,24 @@ export class Git {
     await this.run(["remote", "add", name, url]);
   }
 
-  async pushForce(remote: string, refspec: string): Promise<void> {
-    await this.run(["push", "--force-with-lease", remote, refspec]);
+  async fetchRef(remote: string, ref: string, serverUrl?: string): Promise<void> {
+    const args: string[] = [];
+    if (serverUrl) {
+      const prefix = serverUrl.replace(/\/+$/, "") + "/";
+      args.push("-c", `http.${prefix}.extraheader=`);
+    }
+    args.push("fetch", remote, ref);
+    await this.run(args).catch(() => undefined);
+  }
+
+  async pushForce(remote: string, refspec: string, serverUrl?: string): Promise<void> {
+    const args: string[] = [];
+    if (serverUrl) {
+      const prefix = serverUrl.replace(/\/+$/, "") + "/";
+      args.push("-c", `http.${prefix}.extraheader=`);
+    }
+    args.push("push", "--force-with-lease", remote, refspec);
+    await this.run(args);
   }
 
   async configIdentity(name: string, email: string): Promise<void> {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildBranchName,
   buildCommitUrl,
+  buildPrBranchName,
   buildRemoteUrl,
   isSameTarget,
   parsePrLabels,
@@ -35,6 +36,21 @@ describe("buildBranchName", () => {
 
   it("rejects non-hex shas", () => {
     expect(() => buildBranchName("p", "not-a-sha")).toThrow();
+  });
+});
+
+describe("buildPrBranchName", () => {
+  it("formats as <prefix>/pr-<number>", () => {
+    expect(buildPrBranchName("cross-validation", 42)).toBe(
+      "cross-validation/pr-42"
+    );
+  });
+
+  it("rejects zero, negatives, and non-integers", () => {
+    expect(() => buildPrBranchName("p", 0)).toThrow();
+    expect(() => buildPrBranchName("p", -1)).toThrow();
+    expect(() => buildPrBranchName("p", 1.5)).toThrow();
+    expect(() => buildPrBranchName("p", Number.NaN)).toThrow();
   });
 });
 
